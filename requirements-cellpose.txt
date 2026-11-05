@@ -1,0 +1,8 @@
+# Cellpose on your own computer (segment_cells.py or the Cellpose window)
+#   pip install -r requirements-cellpose.txt
+# Same version as notebooks/cellpose_colab.ipynb, so both give the same ROIs.
+cellpose[gui]==4.2.1.1
+roifile
+tifffile
+scipy
+matplotlib>=3.7
