@@ -404,8 +404,11 @@ cell of the other set (IoU ≥ 0.5 = same cell) and reports matched cells, cells
 whether the numbering is the same; writes `A_vs_B.csv`.
 
 ---
-
 ## Method
+
+The method follows `Normalization_ionomycin.R` from
+[Calcium-Imaging-Analysis-with-R](https://github.com/amapruns/Calcium-Imaging-Analysis-with-R/blob/master/Normalization_ionomycin.R),
+reimplemented and extended in Python.
 
 Per cell, per movie (each movie has its own baseline):
 
