@@ -142,6 +142,15 @@ python ../../scripts/make_graphs.py          # press ENTER at every question
 
 No real experiment data is in this repository; `.gitignore` keeps movies, CSV files and results out of Git.
 
+## Reference
+
+The analysis method (background subtraction, baseline mean, responder threshold of mean + 5 × SD, and
+normalisation to a positive control such as ionomycin or KCl) follows the R toolbox
+[Calcium-Imaging-Analysis-with-R](https://github.com/amapruns/Calcium-Imaging-Analysis-with-R)
+by amapruns, in particular
+[`Normalization_ionomycin.R`](https://github.com/amapruns/Calcium-Imaging-Analysis-with-R/blob/master/Normalization_ionomycin.R).
+This repository reimplements and extends it in Python (several drugs, quality-control filter, cell size,
+Cellpose segmentation, graphs).
 ## Citation
 
 Please cite Cellpose (Pachitariu, Rariden & Stringer, 2025, *Cellpose-SAM*, bioRxiv) and ImageJ
