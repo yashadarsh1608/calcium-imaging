@@ -20,8 +20,6 @@ flowchart LR
 ## Installation instructions
 
 1. Install **ImageJ**: <https://imagej.net/ij/download.html> → download for your system and unzip.
-   For drift correction (only if needed) also install the **StackReg** and **TurboReg** plugins
-   (<https://bigwww.epfl.ch/thevenaz/stackreg/>).
 2. Install **Miniforge** (Python + conda): <https://github.com/conda-forge/miniforge>.
 3. Download this repository: **Code → Download ZIP** and unzip it, or
    ```bash
@@ -59,7 +57,7 @@ Computer: `python segment_cells.py` → output `brightfield_rois.zip`.
 ## Part 2: Measure the cells (ImageJ)
 
 **Description:** Loads the ROIs on every movie, adds 3 empty background boxes, and measures the mean gray
-value of every ROI in every frame (one CSV per movie). Optionally measures the area of every cell once.
+value of every ROI in every frame (one CSV per movie), also measures the area of every cell once.
 
 **Filename:** no code; step-by-step in [STEPS.md → Steps 4–6](STEPS.md#step-4--rois-and-background-boxes-imagej).
 
