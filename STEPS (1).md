@@ -11,7 +11,7 @@ you need, what to do and what you get.
 | [3 Outline the cells](#step-3--outline-the-cells-cellpose) | Colab or computer | `brightfield_rois.zip` |
 | [4 ROIs and background boxes](#step-4--rois-and-background-boxes-imagej) | ImageJ | `ROIs_with_bg.zip` |
 | [5 Measure every movie](#step-5--measure-every-movie-imagej) | ImageJ | `drug1.csv` … `kcl.csv` |
-| [6 Cell size (optional)](#step-6--cell-size-optional-imagej) | ImageJ | `cell_size.csv` |
+| [6 Cell size](#step-6--cell-size-optional-imagej) | ImageJ | `cell_size.csv` |
 | [7 Analysis](#step-7--analysis-python) | Python | `multidrug_results.xlsx` + CSV |
 | [8 Graphs](#step-8--graphs-python) | Python | 4 graphs |
 | [Flowcharts](#flowcharts) · [Script reference](#script-reference) · [Method](#method) · [Troubleshooting](#troubleshooting) | | |
@@ -28,7 +28,7 @@ flowchart TD
     C --> S["Step 3 · Cellpose<br/>outlines on brightfield<br/>→ brightfield_rois.zip"]:::img
     S --> B["Step 4 · ImageJ<br/>check ROIs + 3 background boxes<br/>→ ROIs_with_bg.zip"]:::img
     B --> M["Step 5 · ImageJ Multi Measure<br/>every movie, same ROIs<br/>→ drug1.csv … kcl.csv"]:::img
-    B --> Z["Step 6 · ImageJ Measure<br/>→ cell_size.csv (optional)"]:::img
+    B --> Z["Step 6 · ImageJ Measure<br/>→ cell_size.csv"]:::img
     M --> A["Step 7 · calcium_multidrug.py<br/>→ multidrug_results.xlsx + CSV"]:::py
     Z --> A
     A --> G["Step 8 · make_graphs.py<br/>→ 4 graphs"]:::py
