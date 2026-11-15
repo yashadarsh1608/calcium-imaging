@@ -16,3 +16,4 @@ dependencies:
       - pandas>=2.0
       - matplotlib>=3.7
       - openpyxl>=3.1
+      - PyQt6                    # the window calcium_gui.py (cellpose[gui] installs it too)

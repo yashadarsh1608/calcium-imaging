@@ -15,6 +15,11 @@ Method (lab flowchart, done separately for every recording):
 Optional quality control (QC): one recording with a control drug (e.g. KCl, ionomycin), any name.
   Only cells that respond to it are analysed; the others are listed as excluded.
   Responses are also given normalised to each cell's own QC peak: deltaF / deltaF(QC).
+Two more quality-control rules (each can be switched off with 0):
+  - minimum QC response: a cell is removed if its peak deltaF/F0 for the QC drug is below 0.0001
+    (this also removes cells that are not brighter than the background at rest);
+  - late response: a cell is removed if, in any drug recording, its response STARTS later than
+    40 s after the drug was added (start = first of 3 frames in a row above the cell's threshold).
 Optional cell size: ImageJ ROI Manager -> Measure (Area, Feret, ...) -> area and diameter per cell.
 
 Output: one Excel file + the same tables as CSV files, ready for making any graph later.
@@ -36,9 +41,11 @@ BACKGROUND_USE = None    # None = all boxes; or e.g. ["Mean98"]
 QC_FILE = None           # None = must be typed ('none' if there is no quality-control recording)
 QC_NAME = None           # None = must be typed (KCl, ionomycin, ...)
 QC_PEAK = None           # None = must be typed
+MIN_QC_DFF0 = 0.0001     # remove cells whose peak ΔF/F0 for the QC drug is below this (0 = rule off)
+LATE_RESPONSE_S = 40     # remove cells whose response starts later than this many s after the drug (0 = rule off)
+ONSET_FRAMES = 3         # a response "starts" at the first of this many frames in a row above the threshold
 SIZE_FILE = "cell_size.csv"   # suggested only if the file exists; 'none' to skip
 PIXEL_SIZE_UM = 0        # µm per pixel if the size file is in pixels; 0 = already in µm
-CSV_STYLE = "en"         # "en" = comma-separated, decimal point | "de" = semicolon, decimal comma (German Excel)
 OUTPUT_FOLDER = "multidrug_results"
 # ====================================================================================================================
 
@@ -54,13 +61,17 @@ import pandas as pd
 def read_imagej_csv(path):
     path = Path(path)
     first = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()[0]
-    if ";" in first:
+    if ";" in first:                                     # German Excel: 1,5 with semicolons
         df = pd.read_csv(path, sep=";", decimal=",", encoding="utf-8-sig")
+    elif "\t" in first:                                  # ImageJ Results saved as .xls / .txt
+        df = pd.read_csv(path, sep="\t", encoding="utf-8-sig")
     else:
         df = pd.read_csv(path, encoding="utf-8-sig")
     cols = [c for c in df.columns if str(c).strip().startswith("Mean")]
     if not cols:
-        raise ValueError(f"{path.name}: no 'Mean' columns found - measure 'Mean gray value' in ImageJ.")
+        found = ", ".join(str(c).strip() for c in list(df.columns)[:8]) or "nothing"
+        raise ValueError(f"{path.name}: no 'Mean' columns found (columns in the file: {found}). In ImageJ tick "
+                         f"'Mean gray value' in Analyze > Set Measurements and use ROI Manager > More > Multi Measure.")
     data = df[cols].apply(pd.to_numeric, errors="coerce")
     data.columns = [str(c).strip() for c in cols]
     data.index = pd.RangeIndex(1, len(data) + 1, name="Frame")
@@ -149,7 +160,18 @@ def read_size_file(path, cells, px_um=0):
 
 
 # ------------------------------------------------------------------ analysis
-def analyse_recording(csv, name, baseline, peak, n_sd, n_bg, use):
+def response_start(F, thr, added, n_frames=3):
+    """Frame at which each cell's response starts: the first frame after the drug was added from which
+    F stays above the cell's threshold for n_frames frames in a row (NaN = never)."""
+    above = F.gt(thr, axis=1)
+    above.loc[above.index <= added] = False
+    run = above.astype(int).rolling(n_frames).sum().shift(-(n_frames - 1)) >= n_frames
+    start = run.idxmax().astype(float)
+    start[~run.any()] = np.nan
+    return start
+
+
+def analyse_recording(csv, name, baseline, peak, n_sd, n_bg, use, added=None, onset_frames=3):
     raw = read_imagej_csv(csv)
     X, bg = background_subtract(raw, n_bg, use)
     b0, b1 = baseline
@@ -162,7 +184,9 @@ def analyse_recording(csv, name, baseline, peak, n_sd, n_bg, use):
     peak_F = F.loc[p0:p1].mean()
     resp = peak_F > thr
     F0 = Bavg.where(Bavg > 0)                 # deltaF/F0 only for cells brighter than background
+    added = b1 if added is None else added    # frame at which the drug was added
     return dict(name=name, csv=Path(csv), raw=raw, bg=bg, X=X, Bavg=Bavg, F=F, dFF0=F / F0,
+                added=added, start=response_start(F, thr, added, onset_frames),
                 mean_base=mean_base, sd_base=sd_base, thr=thr, peak_F=peak_F, peak_dFF0=peak_F / F0,
                 max_F=F.loc[p0:p1].max(), resp=resp, baseline=baseline, peak=peak, n_sd=n_sd)
 
@@ -189,15 +213,20 @@ def safe_file(name):
 
 
 def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
-        qc_index=None, size_csv=None, px_um=0, csv_style="en"):
+        qc_index=None, size_csv=None, px_um=0,
+        added=None, late_s=0, min_qc_dff0=0, onset_frames=ONSET_FRAMES):
+    """added = frame of drug addition per recording (None = end of its baseline);
+    late_s > 0: remove cells whose response to a drug starts later than late_s seconds after the drug;
+    min_qc_dff0 > 0: remove cells whose peak ΔF/F0 for the QC drug is below it."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     for old in list(out.glob("*.csv")) + list(out.glob("*.xlsx")):
         old.unlink()
 
     recs = []
-    for csv, nm, bl, pk, sd in zip(csvs, names, baselines, peaks, n_sds):
-        d = analyse_recording(csv, nm, bl, pk, sd, n_bg, use)
+    added = list(added) if added else [None] * len(csvs)
+    for csv, nm, bl, pk, sd, ad in zip(csvs, names, baselines, peaks, n_sds, added):
+        d = analyse_recording(csv, nm, bl, pk, sd, n_bg, use, ad, onset_frames)
         baseline_check(d["X"], bl, nm)
         recs.append(d)
 
@@ -226,9 +255,29 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     status = pd.Series(np.where(kept, "kept", f"excluded (no {qn} response)" if qc else "excluded"),
                        index=kept.index)
     status[missing] = "excluded (missing data)"
+    # rule: minimum response to the QC drug (also removes cells not brighter than background at rest)
+    if qc and min_qc_dff0 > 0:
+        low = kept & ~(qc["peak_dFF0"] >= min_qc_dff0)
+        status[low] = f"excluded ({qn} ΔF/F0 below {min_qc_dff0:g})"
+        kept &= ~low
+    elif min_qc_dff0 > 0:
+        print("  note: no quality-control recording -> the minimum ΔF/F0 rule is not used")
+    # rule: late response = the response to a drug starts later than late_s seconds after the drug was added
+    for d in recs:
+        d["start_s"] = (d["start"] - d["added"]) * interval      # seconds after the drug, NaN = no response
+    if late_s > 0:
+        for d in drugs:
+            late = kept & (d["start_s"] > late_s)
+            status[late] = f"excluded (late response to {d['name']}, after {late_s:g} s)"
+            kept &= ~late
+            if late_s > (len(d["F"]) - d["added"]) * interval:
+                print(f"  note {d['name']}: the recording ends {(len(d['F']) - d['added']) * interval:g} s after the "
+                      f"drug, so no response can start later than {late_s:g} s")
     n_kept = int(kept.sum())
-    if qc and n_kept == 0:
-        raise ValueError(f"no cell passed the {qn} quality control - check the {qn} peak window")
+    if n_kept == 0:
+        raise ValueError("no cell passed the quality control - check the peak window of the quality-control "
+                         "drug and the quality-control rules")
+    any_rule = bool(qc) or late_s > 0 or bool(missing)
     cells_k = kept.index[kept]
 
     if qc:
@@ -247,6 +296,8 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     resp_tab = pd.DataFrame(index=pd.Index(ref, name="Cell"))
     if qc:
         resp_tab[f"{qn} (quality control)"] = status.values
+    elif any_rule:
+        resp_tab["Cell status"] = status.values
     for d in drugs:
         yes = np.where(d["resp"], "yes", "no")
         resp_tab[d["name"]] = np.where(kept, yes, "excluded")
@@ -259,6 +310,8 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     per_cell = pd.DataFrame(index=pd.Index(ref, name="Cell"))
     if qc:
         per_cell[f"{qn} QC"] = status.values
+    elif any_rule:
+        per_cell["Cell status"] = status.values
     size = None
     if size_csv:
         size = read_size_file(size_csv, ref, px_um)
@@ -279,6 +332,7 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
         per_cell[f"{n} | mean peak ΔF"] = d["peak_F"]
         per_cell[f"{n} | max ΔF in peak window"] = d["max_F"]
         per_cell[f"{n} | mean peak ΔF/F0"] = d["peak_dFF0"]
+        per_cell[f"{n} | response starts (s after drug; empty = never above threshold)"] = d["start_s"]
         if qc and d is not qc:
             per_cell[f"{n} | mean peak ΔF/ΔF({qn})"] = d["peak_norm"]
         per_cell[f"{n} | responder (1/0)"] = d["resp"].astype(int)
@@ -320,7 +374,7 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
             r = d["resp"] & kept
             groups += [("responders", r[r].index), ("non-responders", r[(~r) & kept].index)]
         else:
-            groups += [(f"excluded ({qn}-negative)", kept.index[~kept])]
+            groups += [("excluded cells", kept.index[~kept])]
         for gname, cells in groups:
             base = {"Recording": d["name"], "Group": gname, "n cells": len(cells), "Frame": fr,
                     "Time in recording (s)": t_rec, "Experiment time (s)": t_exp}
@@ -354,21 +408,27 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
                 ("Units", "ΔF = X - Bavg (gray value), ΔF/F0 = ΔF / Bavg")]
     for d in recs:
         set_rows.append((f"{d['name']}", f"baseline {d['baseline'][0]}-{d['baseline'][1]}, peak "
-                                          f"{d['peak'][0]}-{d['peak'][1]}, mean + {d['n_sd']:g} SD"))
+                                          f"{d['peak'][0]}-{d['peak'][1]}, mean + {d['n_sd']:g} SD, "
+                                          f"drug added at frame {d['added']}"))
     if qc:
         set_rows += [("Quality control", f"{qn}: only cells responding to {qn} are analysed"),
-                     ("Cells kept / total", f"{n_kept} / {n_all}"),
+                     ("Minimum QC response", f"peak ΔF/F0 for {qn} at least {min_qc_dff0:g}" if min_qc_dff0 > 0 else "off"),
                      ("Normalisation", f"ΔF / mean ΔF in the {qn} peak window of the same cell")]
+    set_rows += [("Late-response rule", f"cell removed if its response to a drug starts later than {late_s:g} s after "
+                                        f"the drug was added (start = first of {onset_frames} frames in a row above "
+                                        f"the threshold)" if late_s > 0 else "off"),
+                 ("Cells kept / total", f"{n_kept} / {n_all}")]
     if size is not None:
         set_rows += [("Size file", Path(size_csv).name), ("Pixel size (µm)", px_um or "file already in µm")]
     settings = pd.DataFrame(set_rows, columns=["Setting", "Value"])
 
     # ---------------- write: Excel + CSV
     tables = [("Summary", summary, False), ("Responders", resp_tab, True), ("Combinations", combos, False)]
-    if qc:
-        qcs = pd.DataFrame({"": ["Total cells", f"{qn}-positive (kept)", f"{qn}-negative (excluded)"],
-                            "Cells": [n_all, n_kept, n_all - n_kept],
-                            "%": [100.0, round(100 * n_kept / n_all, 1), round(100 * (n_all - n_kept) / n_all, 1)]})
+    reasons = status[~kept].value_counts()
+    if any_rule:
+        labels = ["Total cells", "kept (analysed)"] + list(reasons.index)
+        cnt = [n_all, n_kept] + [int(v) for v in reasons.values]
+        qcs = pd.DataFrame({"": labels, "Cells": cnt, "%": [round(100 * c / n_all, 1) for c in cnt]})
         tables += [("QC", qcs, False), ("Excluded_cells", per_cell[~kept.values], True)]
     tables += [("Per_cell", per_cell, True)]
     if size is not None:
@@ -378,11 +438,11 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     if qc:
         qall = qc["F"].copy()
         qall.insert(0, "Time in recording (s)", (qall.index.values - 1) * interval)
-        status = pd.DataFrame([["", ""] + list(status.values),
+        head = pd.DataFrame([["", ""] + list(status.values),
                                ["", "threshold"] + list(qc["thr"].values),
                                ["", "mean peak"] + list(qc["peak_F"].values)],
                               columns=["Frame", "Time in recording (s)"] + list(qc["F"].columns))
-        qall = pd.concat([status, qall.reset_index()], ignore_index=True)
+        qall = pd.concat([head, qall.reset_index()], ignore_index=True)
         tables += [(f"QC_{safe_file(qn)}_dF_all_cells", qall, False)]
     if "dF_norm" in wide:
         tables += [(f"Cell_traces_norm_{safe_file(qn)}", wide["dF_norm"], False)]
@@ -391,7 +451,6 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
         r = d["raw"].copy(); r["Background used"] = d["bg"]
         tables.append((f"Raw_{i}_{d['name']}", r, True))
 
-    sep, dec = (";", ",") if csv_style == "de" else (",", ".")
     xlsx = out / "multidrug_results.xlsx"
     used = set()
     with pd.ExcelWriter(xlsx) as w:
@@ -402,8 +461,7 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     for old in csv_dir.glob("*.csv"):
         old.unlink()
     for k, (name, df, idx) in enumerate(tables, 1):
-        df.to_csv(csv_dir / f"{k:02d}_{safe_file(name)}.csv", sep=sep, decimal=dec, index=idx,
-                  encoding="utf-8-sig")
+        df.to_csv(csv_dir / f"{k:02d}_{safe_file(name)}.csv", index=idx, encoding="utf-8-sig")
 
     zpath = out.parent / f"{out.name}.zip"
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
@@ -412,9 +470,11 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
                 z.write(f, arcname=f"{out.name}/{f.relative_to(out)}")
 
     print(f"\n{n_all} cells (same ROIs in all recordings)")
-    if qc:
-        print(f"  quality control {qn}: {n_kept} kept ({100 * n_kept / n_all:.1f}%), "
+    if any_rule:
+        print(f"  quality control: {n_kept} kept ({100 * n_kept / n_all:.1f}%), "
               f"{n_all - n_kept} excluded -> everything below is of the {n_kept} kept cells")
+        for reason, c in reasons.items():
+            print(f"    {c:4d}  {reason}")
     for row in rows:
         print(f"  {row['Drug']:<15s} responders {row['Responders']:4d} ({row['% responders']:5.1f}%)   "
               f"baseline {row['Baseline frames']}, peak {row['Peak frames']}")
@@ -587,7 +647,7 @@ def main():
     for i in range(len(names) - 1):
         washes.append(_ask(f"Washing time between {names[i]} and {names[i + 1]} (s)", WASH_TIME, float))
 
-    baselines, peaks, n_sds = [], [], []
+    baselines, peaks, n_sds, added = [], [], [], []
     for i, (nm, raw) in enumerate(zip(names, raws)):
         nf = len(raw)
         rng = lambda v, nf=nf: _range(v, nf)
@@ -602,7 +662,26 @@ def main():
                 break
             print("  the peak window must start after the baseline ends - try again")
         sd = _ask(f"  {nm}: threshold (number of SD)", float(THRESHOLD_SD), float)
-        baselines.append(bl); peaks.append(pk); n_sds.append(sd)
+
+        def frame(v, nf=nf):
+            v = int(float(v))
+            if not 1 <= v < nf:
+                raise ValueError(f"a frame between 1 and {nf - 1}")
+            return v
+        ad = _ask(f"  {nm}: frame at which the drug was added", bl[1], frame)
+        baselines.append(bl); peaks.append(pk); n_sds.append(sd); added.append(ad)
+
+    def not_negative(v):
+        v = float(str(v).replace(",", "."))
+        if v < 0:
+            raise ValueError("0 or more")
+        return v
+    late_s = _ask("Remove cells whose response starts later than this many seconds after the drug (0 = off)",
+                  float(LATE_RESPONSE_S), not_negative)
+    min_dff0 = 0.0
+    if qc_index is not None:
+        min_dff0 = _ask(f"Remove cells whose peak ΔF/F0 for {names[qc_index]} is below (0 = off)",
+                        float(MIN_QC_DFF0), not_negative)
 
     size_csv = _ask("Cell size file (ImageJ Measure of the ROIs), or 'none'",
                     SIZE_FILE if _exists(SIZE_FILE) else "none", _file_or_none)
@@ -610,22 +689,17 @@ def main():
     if size_csv:
         px_um = _ask("Pixel size in µm if that file is in pixels (0 = already in µm)", float(PIXEL_SIZE_UM), float)
 
-    def style(v):
-        v = str(v).strip().lower()
-        if v not in ("en", "de"):
-            raise ValueError("type en (comma, decimal point) or de (semicolon, decimal comma)")
-        return v
-    csv_style = _ask("CSV style: en = 1.5 with commas, de = 1,5 with semicolons (German Excel)", CSV_STYLE, style)
-
     out = Path(csvs[0]).parent / OUTPUT_FOLDER
     print()
     run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
-        qc_index=qc_index, size_csv=size_csv, px_um=px_um, csv_style=csv_style)
+        qc_index=qc_index, size_csv=size_csv, px_um=px_um,
+        added=added, late_s=late_s, min_qc_dff0=min_dff0)
 
     settings = dict(csvs=[c.name for c in csvs], names=names, baselines=baselines, peaks=peaks,
                     n_sd=n_sds, n_bg=n_bg, bg_use=use, interval=interval, washes=washes,
                     qc=names[qc_index] if qc_index is not None else None,
-                    size_file=size_csv.name if size_csv else None, pixel_size_um=px_um, csv_style=csv_style)
+                    size_file=size_csv.name if size_csv else None, pixel_size_um=px_um,
+                    drug_added_at_frame=added, late_response_s=late_s, min_qc_dff0=min_dff0)
     (out / "settings.json").write_text(json.dumps(settings, indent=2))
 
 

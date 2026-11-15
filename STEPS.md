@@ -13,7 +13,7 @@ you need, what to do and what you get.
 | [5 Measure every movie](#step-5--measure-every-movie-imagej) | ImageJ | `drug1.csv` … `kcl.csv` |
 | [6 Cell size](#step-6--cell-size-optional-imagej) | ImageJ | `cell_size.csv` |
 | [7 Analysis](#step-7--analysis-python) | Python | `multidrug_results.xlsx` + CSV |
-| [8 Graphs](#step-8--graphs-python) | Python | 4 graphs |
+| [8 Graphs](#step-8--graphs-python) | Python | 5 graphs |
 | [Flowcharts](#flowcharts) · [Script reference](#script-reference) · [Method](#method) · [Troubleshooting](#troubleshooting) | | |
 
 ---
@@ -29,9 +29,9 @@ flowchart TD
     S --> B["Step 4 · ImageJ<br/>check ROIs + 3 background boxes<br/>→ ROIs_with_bg.zip"]:::img
     B --> M["Step 5 · ImageJ Multi Measure<br/>every movie, same ROIs<br/>→ drug1.csv … kcl.csv"]:::img
     B --> Z["Step 6 · ImageJ Measure<br/>→ cell_size.csv"]:::img
-    M --> A["Step 7 · calcium_multidrug.py<br/>→ multidrug_results.xlsx + CSV"]:::py
+    M --> A["Step 7 · analysis<br/>window (calcium_gui.py) or calcium_multidrug.py<br/>→ multidrug_results.xlsx + CSV"]:::py
     Z --> A
-    A --> G["Step 8 · make_graphs.py<br/>→ 4 graphs"]:::py
+    A --> G["Step 8 · graphs<br/>window or make_graphs.py<br/>→ 5 graphs"]:::py
     classDef img fill:#f2f2f2,stroke:#555,color:#111
     classDef py fill:#e3f4e8,stroke:#1a7f3c,color:#111
 ```
@@ -54,10 +54,15 @@ flowchart TD
     Q1 --> Q2["Bavg, ΔF = X − Bavg"]:::qc
     Q2 --> Q3["threshold = mean + 5 × SD<br/>QC peak = mean ΔF in QC peak window"]:::qc
     Q3 --> Q4{"QC peak<br/>> threshold?"}:::qc
-    Q4 -- yes --> QK["kept: cell is alive<br/>and responds"]:::qc
     Q4 -- no --> QE["excluded<br/>(listed with the reason)"]:::qc
+    Q4 -- yes --> Q5{"QC peak ΔF/F0<br/>≥ 0.0001?"}:::qc
+    Q5 -- no --> QE
+    Q5 -- yes --> QK["passed the QC drug"]:::qc
 
-    QK --> G1["only kept cells are counted"]:::comb
+    D3 --> L1{"response to a drug starts<br/>later than 40 s after<br/>the drug was added?"}:::drug
+    L1 -- yes --> QE
+    QK --> G1["kept cells:<br/>only these are counted"]:::comb
+    L1 -- no --> G1
     DR --> G1
     DN --> G1
     G1 --> G2["% responders per drug<br/>combinations (Venn)<br/>ΔF/F0 = ΔF / Bavg<br/>ΔF / ΔF(QC peak)<br/>+ cell area / diameter"]:::comb
@@ -67,7 +72,8 @@ flowchart TD
     classDef comb fill:#dff3e6,stroke:#1a7f3c,color:#111
 ```
 
-Without a QC drug the red part is skipped and every cell is analysed.
+Without a QC drug the red part is skipped. The two extra rules (minimum ΔF/F0 of the QC response, late
+response) can each be switched off with 0.
 
 ---
 
@@ -266,6 +272,68 @@ Once; all movies share the ROIs.
 
 ## Step 7 — Analysis (Python)
 
+Two ways with the same result: **A · the window** (buttons, the traces are shown while you set the
+windows) or **B · the command line** (questions in the terminal).
+
+### A · The window (`calcium_gui.py`)
+
+```bash
+conda activate cellpose
+cd /path/to/calcium-imaging
+git pull                          # newest version (the window also checks when it starts)
+python scripts/calcium_gui.py
+```
+
+1. **Get the CSV files into the window**, in one of three ways:
+   - **Open folder…** (Ctrl+O): choose the *folder* with `drug1.csv` … `kcl.csv` (+ `cell_size.csv`).
+     Every recording in it becomes a row of the table.
+   - **Add CSV files…** (Ctrl+Shift+O): choose the *files* themselves (hold Ctrl to select several).
+     Use this if the folder also contains other tables, or if the files are in different folders.
+   - **Drag** the folder or the files from the file manager into the window.
+
+   A file with `kcl`, `iono` or `qc` in its name gets the role **QC**; a table with an *Area* column is
+   taken as the cell size file. A file that is not a table from ImageJ is not added, and a message says
+   which columns it has. The results are saved next to the first files (`multidrug_results/`).
+2. **The table** (double-click a cell to type):
+
+   | Column | What to enter |
+   |---|---|
+   | CSV file | the file of that recording |
+   | Name | the drug name (used in every table and graph) |
+   | Role | **Drug** or **QC** (only one QC; none = every cell is analysed) |
+   | Baseline | first-last frame before the drug arrives, e.g. `1-8` |
+   | Peak | first-last frame of the response, e.g. `15-25`; **must be typed** |
+   | SD | threshold, `5` = mean baseline + 5 × SD |
+   | Drug at | frame at which the drug was added (empty = end of the baseline); used for the late-response rule |
+   | Wash (s) | washing time after this recording, before the next one |
+
+   **↑ / ↓** put the rows in the order of the experiment; **+ Add row / Remove** add or remove a row.
+   Hold the mouse over a column title to read what it means. The line under the table says which drug is
+   the quality control; it turns orange if none is chosen.
+3. **Overview tab:** one panel per recording with the median cell (dark line), the middle 50 % of the
+   cells (band) and the top 10 % (dotted, shows a response of few cells). The baseline is shaded grey and
+   the peak window orange, and the title says at which frame the signal is highest. It redraws while you
+   type, so set the windows by looking at it.
+4. **Measurement:** number of background boxes (last ROIs), boxes to use (`all`, or e.g. `98, 99` if the
+   messages warn about a box), time between frames, cell size file, pixel size in µm (0 = file already in µm).
+   **Quality control:** the two extra rules: remove cells that respond later than 40 s after the drug, and
+   remove cells whose QC ΔF/F0 is below 0.0001 (0 = rule off).
+5. **Run analysis** (Ctrl+R). A wrong or missing entry is explained in a message. If no recording has the
+   role QC, the window asks whether to run without quality control. Afterwards:
+   - **Summary** tab: cells kept by the QC, responders per drug, combinations, cell size
+   - graph tabs **1–5** (Step 8)
+   - **Messages** at the bottom right: all warnings (table under *B* below)
+   - files: `multidrug_results/` with the Excel file, `csv/`, `graphs/`, `settings.json`
+6. **Under the graphs:** `F − F0` or `ΔF/F0` for graphs 1 and 2 (redrawn at once); **Save graphs** as
+   png, pdf or svg; **Open results folder**.
+7. Your entries are saved in the folder (`calcium_gui_session.json`) and come back when you open it again.
+   **File → Open results file…** shows the graphs of an earlier analysis without running it again.
+
+Missing PyQt6 (`No module named PyQt6`)? `pip install PyQt6`. The window does not open on Linux
+(`xcb` error)? `sudo apt install libxcb-cursor0`.
+
+### B · The command line (`calcium_multidrug.py`)
+
 Folder with `drug1.csv` … `kcl.csv` (+ `cell_size.csv`), terminal in that folder:
 
 ```bash
@@ -293,9 +361,11 @@ explained and asked again.
 | …: baseline frames (first-last) (every movie) | `1-8` |
 | …: peak frames (first-last) (every movie, required) | `15-25` |
 | …: threshold (number of SD) | `5` |
+| …: frame at which the drug was added (every movie) | `10` (suggestion: end of the baseline) |
+| Remove cells whose response starts later than this many seconds after the drug (0 = off) | `40` |
+| Remove cells whose peak ΔF/F0 for KCl is below (0 = off) | `0.0001` |
 | Cell size file (ImageJ Measure of the ROIs), or 'none' | `cell_size.csv` |
 | Pixel size in µm if that file is in pixels (0 = already in µm) | `0.325` |
-| CSV style: en = 1.5 with commas, de = 1,5 with semicolons | `de` for German Excel |
 
 **Peak window for a drug with no response:** choose it from when the drug was added (e.g. added at frame
 10 → `12-25`) or copy the window of a drug that worked. Its cells stay below the threshold and are counted
@@ -318,8 +388,8 @@ as non-responders — the correct result. Choose the window before looking at th
 | Summary | per drug: cells analysed, responders, %, mean peak ΔF, ΔF/F0, ΔF/ΔF(QC) ± SEM/SD |
 | Responders | per cell: kept/excluded (reason), yes/no per drug, "responds to", number of drugs |
 | Combinations | cells per combination of drugs |
-| QC, Excluded_cells | kept/excluded counts, excluded cells with all numbers |
-| Per_cell | all numbers per cell (size, Bavg, SD, threshold, peaks, ΔF/F0, normalised, 1/0) |
+| QC, Excluded_cells | cells kept and cells removed by each rule; the excluded cells with all numbers |
+| Per_cell | all numbers per cell (status, size, Bavg, SD, threshold, peaks, ΔF/F0, when the response starts, normalised, 1/0) |
 | Cell_size | area (µm²), equivalent diameter, Feret max/min, perimeter, circularity |
 | Mean_traces | mean/SD/SEM per frame (all, responders, non-responders), recording and experiment time |
 | Cell_traces_dF / _dF_F0 / _norm | every kept cell, every frame |
@@ -330,23 +400,29 @@ as non-responders — the correct result. Choose the window before looking at th
 
 ## Step 8 — Graphs (Python)
 
-In the folder that contains `multidrug_results/`:
+**In the window** the graphs are the tabs 1–5; they are saved automatically after the analysis and again
+with **Save graphs**. **On the command line**, in the folder that contains `multidrug_results/`:
 
 ```bash
 python /path/to/calcium-imaging/scripts/make_graphs.py
 ```
 
-Questions: results file (ENTER), graph 1 in `dF` or `dF_F0`, file format `png`/`pdf`/`svg`.
-Saved in `multidrug_results/graphs/`; all graphs use the cells kept after the QC drug.
+Questions: results file (ENTER), `dF` or `dF_F0`, file format `png`/`pdf`/`svg`. Saved in
+`multidrug_results/graphs/`.
+
+**Every graph uses only the cells kept after the quality-control drug.**
 
 | File | Shows |
 |---|---|
-| `1_traces_all_recordings` | ΔF over time of every recording incl. QC: each cell grey, mean black, `//` + washing time |
-| `2_pies_and_venn` | one pie per drug + Venn diagram (2–3 drugs; 4+ drugs: bar chart of every combination) |
-| `3_area_scatter` | area of every kept cell per drug in a bar outline: black = responder, grey = non-responder |
-| `4_area_responders_box` | box-and-whisker of the area of the responders only |
+| `1_traces_cells` | F − F0 over time of every recording incl. the QC drug: every cell one line (no mean), `//` + washing time |
+| `2_drug_and_QC` | one row per drug, **only the cells that responded to that drug** (all of them passed the quality control). Left: their response to the drug. Right: the response of exactly the same cells to the QC drug. Example: 20 of 83 kept cells respond to drug 1 → both panels of row 1 show these 20 cells; 45 respond to drug 2 → row 2 shows these 45. Every cell grey, mean black |
+| `3_pies_and_venn` | black and grey: one pie per drug (responders black, non-responders grey) + Venn diagram (one line style per drug). **2–3 drugs:** the area of each circle is proportional to its number of responders, the overlaps to the shared responders. **4 or more drugs:** a bar chart with one bar per combination of drugs (a Venn diagram of so many drugs is hard to read) |
+| `4_area_scatter` | area of every kept cell per drug in a bar outline: black = responder, grey = non-responder |
+| `5_area_responders_box` | box-and-whisker of the area of the responders only |
 
-Graphs 3 and 4 need the cell size (Step 6). `STEP` at the top of the script sets the distance between drugs.
+Graphs 4 and 5 need the cell size (Step 6). `STEP` at the top of `make_graphs.py` sets the distance between
+drugs. With three circles not every overlap can be drawn exactly to scale; an overlap that cannot be drawn is
+written under the diagram, and the numbers in the diagram are always the real counts.
 
 ---
 
@@ -362,11 +438,12 @@ for every cell, responder yes/no per drug (threshold mean + N × SD), the QC dec
 
 | Function | What it does |
 |---|---|
-| `read_imagej_csv()` | reads an ImageJ Results CSV (comma or German semicolon format), keeps the *Mean* columns, frame 1 = row 1 |
+| `read_imagej_csv()` | reads an ImageJ Results table (CSV, or tab-separated `.xls`/`.txt`), keeps the *Mean* columns, frame 1 = row 1 |
 | `background_subtract()` | X = cell − mean of the chosen background boxes, frame by frame |
 | `check_background()` | warns about boxes that are brighter than the cells or change during the movie |
 | `baseline_check()` | warns if the cells already rise at the end of the baseline |
 | `analyse_recording()` | Bavg, ΔF, SD, threshold, mean peak, responder, ΔF/F0 for one movie |
+| `response_start()` | the frame at which each cell's response starts (first of 3 frames in a row above its threshold) |
 | `read_size_file()` | reads ImageJ *Measure* (Area, Feret, …), converts pixels to µm |
 | `run()` | QC filter, normalisation to the QC peak, combinations, experiment time, writes Excel + CSV |
 | `overview()` | the `--overview` mode |
@@ -375,17 +452,35 @@ for every cell, responder yes/no per drug (threshold mean + N × SD), the QC dec
 **Inputs:** `drug1.csv` … (rows = frames; columns = `Mean(1)` … one per ROI, background boxes last),
 optional QC CSV, optional `cell_size.csv`. **Outputs:** `multidrug_results/` (Excel, `csv/`, `settings.json`, zip).
 
+### `calcium_gui.py` — the window
+
+**Description:** a PyQt6 window for Steps 7 and 8. It only collects the inputs and shows the results; the
+calculation is done by `calcium_multidrug.run()` and the graphs by `make_graphs`, so window and command line
+give identical tables.
+
+| Part | What it does |
+|---|---|
+| `classify()`, `scan_folder()` | recognise a recording (several *Mean* columns) and the size file (*Area* column) |
+| `Window.choose_folder()`, `add_files()`, `take_files()` | open a folder, add single files, files dragged into the window |
+| `Window.collect()` | reads and checks the table and the settings; explains what is wrong |
+| `Window.refresh_overview()` | draws the Overview and runs the background-box and baseline checks |
+| `Window.run_analysis()` | runs the analysis, writes `settings.json`, loads the results, saves the graphs |
+| `Window.draw_graphs()` / `save_graphs()` | shows / saves the five graphs |
+| `Window.git_pull()` | `git pull` when the window starts (Help → Update now) |
+
 ### `make_graphs.py` — the graphs
 
-**Description:** reads `multidrug_results.xlsx` and draws the four graphs of Step 8; nothing is recalculated.
+**Description:** reads `multidrug_results.xlsx` and draws the five graphs of Step 8; nothing is recalculated.
 
 | Function | Graph |
 |---|---|
-| `load()` | reads Summary, Responders, Per_cell and the cell traces |
-| `g_traces()` | `1_traces_all_recordings`: every cell grey, mean black, // = washing |
-| `g_pies_venn()` | `2_pies_and_venn`: pie per drug + Venn (or combination bars for 4+ drugs) |
-| `g_area_scatter()` | `3_area_scatter`: area of every cell, black = responder, grey = non-responder |
-| `g_area_box()` | `4_area_responders_box`: box-and-whisker of the responders' area |
+| `load()` | reads Summary, Responders, Combinations, Per_cell and the cell traces |
+| `fig_cells()` | `1_traces_cells`: every kept cell, every recording, // = washing |
+| `fig_drug_qc()` | `2_drug_and_QC`: the responders of each drug, next to the same cells in the QC recording; cells grey, mean black |
+| `venn_layout()`, `fig_pies_venn()` | `3_pies_and_venn`: pie per drug + Venn to scale (2–3 drugs) or combination bars (4 or more drugs) |
+| `fig_area_scatter()` | `4_area_scatter`: area of every cell, black = responder, grey = non-responder |
+| `fig_area_box()` | `5_area_responders_box`: box-and-whisker of the responders' area |
+| `save_all()` | saves all graphs (used by the window and the command line) |
 
 ### `segment_cells.py` and `notebooks/cellpose_colab.ipynb` — the outlines
 
@@ -418,7 +513,18 @@ Per cell, per movie (each movie has its own baseline):
 4. **SD** = standard deviation of ΔF over the baseline (sample SD, like Excel STDEV.S)
 5. **Responder** if mean ΔF in the peak window > mean baseline ΔF + 5 × SD
 6. **ΔF/F0** = ΔF / Bavg (only cells brighter than background at rest)
-7. **Quality control:** only QC responders are analysed (**kept**); the others are **excluded** with the reason.
+7. **Quality control:** a cell is **kept** only if it passes every rule; otherwise it is **excluded** with the
+   reason, and nothing of it is counted.
+   - **QC drug:** the cell responds to the quality-control drug (e.g. KCl), by the rule of point 5.
+   - **Minimum QC response:** its mean peak ΔF/F0 for the QC drug is at least 0.0001. This also removes cells
+     that are not brighter than the background at rest (ΔF/F0 cannot be calculated or is negative).
+   - **Late response:** in no drug recording does its response start later than 40 s after the drug was
+     added. The response *starts* at the first frame after the drug from which ΔF stays above the cell's
+     threshold for 3 frames in a row (single noisy frames do not count). A response that starts in time and
+     lasts longer than 40 s is fine. A recording that ends sooner than 40 s after the drug cannot have a
+     late response.
+
+   Both numbers can be changed, and 0 switches a rule off.
    **ΔF/ΔF(QC)** = ΔF / the cell's own mean ΔF in the QC peak window (KCl is not a true maximum; values > 1
    are possible).
 8. **Averages:** over cells; SEM = SD / √n. Percentages are of the kept cells.
@@ -433,14 +539,21 @@ Per cell, per movie (each movie has its own baseline):
 |---|---|
 | `conda: command not found` | install Miniforge; Windows: use *Miniforge Prompt* |
 | `No module named 'pandas'` (or cellpose, openpyxl, roifile) | `conda activate cellpose` or `pip install -r requirements.txt` |
+| window: `No module named PyQt6` | `pip install PyQt6` (in the `cellpose` environment) |
+| window does not open, `Could not load the Qt platform plugin "xcb"` | `sudo apt install libxcb-cursor0`; on Wayland start with `QT_QPA_PLATFORM=xcb python scripts/calcium_gui.py` |
+| window: a recording is missing in the table | its CSV needs several *Mean* columns (ImageJ Multi Measure); **+ Add** adds a row |
+| window: "Update (git pull): could not check" | no internet, or the folder was downloaded as ZIP; the window works anyway |
 | `KeyboardInterrupt` | Ctrl+C was pressed while the script waited; run again and press ENTER |
 | Cellpose `URLError` on the first run | no internet for the model download; or use Colab |
 | `Image used` size differs from the movies | brightfield with other binning/crop; retake or segment an average of the movie |
 | outlines shifted / all cells jump at one frame | frame shift → Step 2 |
 | dip in all cells after a drug | a background box catches signal → use clean boxes |
 | `different ROI columns than …` | measure every movie with the same `ROIs_with_bg.zip` |
+| many `excluded (late response …)` | check *Drug at* (frame of the addition); slow drift upwards or spontaneous activity also counts as a late start; 0 switches the rule off |
 | many `excluded (no KCl response)` | check the QC peak window and the `QC_…` sheet; non-excitable cells → ionomycin |
 | `no 'Area' column` | Set Measurements → Area; ROI Manager → **Measure** |
 | diameters ~100 or more | give the real µm per pixel |
-| Excel shows wrong numbers in a CSV | answer `de` to the CSV style, or open the .xlsx |
+| Excel shows wrong numbers in a CSV | open `multidrug_results.xlsx` instead (same tables); a German Excel reads `1.5` in a CSV wrongly |
+| the window shows no CSV files / "No recordings found" | use **Add CSV files…** and choose the files, or drag them into the window; a recording must be the Multi Measure table with columns `Mean1`, `Mean2` … |
+| graph 3 shows bars instead of a Venn diagram | this is the rule for 4 or more drugs. If you have only 3 drugs, the QC drug is listed as a drug: set its **Role** to **QC** |
 | a drug shows no peak | choose its window from when it was added; all its cells are non-responders |
