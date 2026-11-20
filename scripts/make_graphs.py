@@ -48,6 +48,15 @@ VENN_LINES = ["-", "--", ":", "-.", (0, (7, 1.5, 1, 1.5, 1, 1.5))]   # graph 3: 
 TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
 UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
 UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
+TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
+UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
+UNIT_LABEL = # Graph 2, y axis (the height of the traces):
+#   "panel" = every panel has its own range (default: small responses are visible)
+#   "row"   = the drug and the KCl panel of one row share a range (they can be compared)
+#   "all"   = one fixed range for every panel
+GRAPH2_Y = "panel"
+RESPONDER_CSV_DIR = "responders"     # folder for the CSV files of the responders
+
 
 
 def clean(ax):
@@ -138,7 +147,8 @@ def fig_drug_qc(D, unit="dF"):
     dur = lambda r: tr.loc[tr.Recording == r, "Time in recording (s)"].max() + 1
     widths = [max(dur(d) for d in drugs)] + ([dur(qc)] if qc else [])
     fig = Figure(figsize=(4.4 * ncol + 1.2, 2.7 * len(drugs) + 0.7))
-    axs = fig.subplots(len(drugs), ncol, sharey="col", sharex="col", squeeze=False,
+    share = {"all": True, "row": "row", "panel": False}[GRAPH2_Y]
+    axs = fig.subplots(len(drugs), ncol, sharey=share, sharex="col", squeeze=False,
                        gridspec_kw=dict(width_ratios=widths, wspace=0.22, hspace=0.42))
     for i, drug in enumerate(drugs):
         cells = [c for c in _responders(D, drug) if c in all_cells]
@@ -154,7 +164,6 @@ def fig_drug_qc(D, unit="dF"):
                         fontsize=9, color=INK)
             ax.axhline(0, color=RULE, lw=0.8, zorder=0)
             ax.set_xlim(t[0], t[-1])
-            same = "" if len(cells) == 1 else f""
             title = f"{drug}  ({len(cells)} of {len(D['resp'])} cells responded)" if j == 0 else f"{qc}"
             ax.set_title(title, fontsize=10.5, color="#0b0b0b", loc="left")
             clean(ax)
@@ -460,8 +469,8 @@ def save_all(D, out, fmt="png", unit="dF"):
         path = out / f"{name}.{fmt}"
         fig.savefig(path, dpi=300 if fmt == "png" else None, bbox_inches="tight", facecolor="white")
         saved.append(path)
+    save_responder_csv(D, out, unit)
     return saved
-
 
 # ------------------------------------------------------------------ command line
 def _ask(prompt, default, check=None):
