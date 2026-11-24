@@ -454,23 +454,29 @@ def make_figure(D, name, unit="dF"):
     return fig_area_scatter(D) if name == "4_area_scatter" else fig_area_box(D)
 
 
-def save_all(D, out, fmt="png", unit="dF"):
-    """Save every graph into the folder `out`; returns the saved paths."""
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob("[1-6]_*.*"):                   # graphs of an earlier run would be out of date
-        if old.suffix.lower() in (".png", ".pdf", ".svg"):
-            old.unlink()
-    saved = []
-    for name, _, _ in GRAPHS:
-        fig = make_figure(D, name, unit)
-        if fig is None:
+def save_responder_csv(D, out, unit="dF"):
+    """One CSV per drug with the cells that responded to it. Rows = frames of the drug recording.
+    Columns: the time, then every responder's trace in the drug recording ("<cell> <drug>"),
+    then the same cells in the quality-control recording ("<cell> <QC>"). Returns the paths."""
+    tr = D["traces"][unit]
+    folder = Path(out) / RESPONDER_CSV_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob("*.csv"):
+        old.unlink()
+    written = []
+    for drug in D["drugs"]:
+        cells = [c for c in _responders(D, drug) if c in _cells(tr)]
+        if not cells:
             continue
-        path = out / f"{name}.{fmt}"
-        fig.savefig(path, dpi=300 if fmt == "png" else None, bbox_inches="tight", facecolor="white")
-        saved.append(path)
-    save_responder_csv(D, out, unit)
-    return saved
+        recs = [drug] + ([D["qc"]] if D["qc"] else [])
+        time = tr.loc[tr.Recording == drug, "Time in recording (s)"].reset_index(drop=True).rename("Time (s)")
+        blocks = [tr.loc[tr.Recording == rec, cells].reset_index(drop=True).add_suffix(f" {rec}") for rec in recs]
+        table = pd.concat([time] + blocks, axis=1)
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in drug)
+        path = folder / f"responders_{safe}_{unit}.csv"
+        table.to_csv(path, index=False, encoding="utf-8-sig", float_format="%.4f")
+        written.append(path)
+    return written
 
 # ------------------------------------------------------------------ command line
 def _ask(prompt, default, check=None):
