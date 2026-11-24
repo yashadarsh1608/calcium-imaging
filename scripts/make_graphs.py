@@ -50,7 +50,10 @@ UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
 UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
 TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
 UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
-UNIT_LABEL = # Graph 2, y axis (the height of the traces):
+TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
+UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
+UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
+# Graph 2, y axis (the height of the traces):
 #   "panel" = every panel has its own range (default: small responses are visible)
 #   "row"   = the drug and the KCl panel of one row share a range (they can be compared)
 #   "all"   = one fixed range for every panel
@@ -477,6 +480,25 @@ def save_responder_csv(D, out, unit="dF"):
         table.to_csv(path, index=False, encoding="utf-8-sig", float_format="%.4f")
         written.append(path)
     return written
+
+
+def save_all(D, out, fmt="png", unit="dF"):
+    """Save every graph into the folder `out`; returns the saved paths."""
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("[1-6]_*.*"):                   # graphs of an earlier run would be out of date
+        if old.suffix.lower() in (".png", ".pdf", ".svg"):
+            old.unlink()
+    saved = []
+    for name, _, _ in GRAPHS:
+        fig = make_figure(D, name, unit)
+        if fig is None:
+            continue
+        path = out / f"{name}.{fmt}"
+        fig.savefig(path, dpi=300 if fmt == "png" else None, bbox_inches="tight", facecolor="white")
+        saved.append(path)
+    save_responder_csv(D, out, unit)
+    return saved
 
 # ------------------------------------------------------------------ command line
 def _ask(prompt, default, check=None):
