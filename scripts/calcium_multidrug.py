@@ -43,9 +43,9 @@ QC_NAME = None           # None = must be typed (KCl, ionomycin, ...)
 QC_PEAK = None           # None = must be typed
 MIN_QC_DFF0 = 0.0001     # remove cells whose peak ΔF/F0 for the QC drug is below this (0 = rule off)
 LATE_RESPONSE_S = 40     # remove cells whose response starts later than this many s after the drug (0 = rule off)
+PEAK_LATE_S = 0          # remove cells whose highest point (peak) comes later than this many s after the drug (0 = off)
 ONSET_FRAMES = 3         # a response "starts" at the first of this many frames in a row above the threshold
 SIZE_FILE = "cell_size.csv"   # suggested only if the file exists; 'none' to skip
-PIXEL_SIZE_UM = 0        # µm per pixel if the size file is in pixels; 0 = already in µm
 OUTPUT_FOLDER = "multidrug_results"
 # ====================================================================================================================
 
@@ -146,8 +146,9 @@ def read_size_file(path, cells, px_um=0):
     df = df.iloc[:len(cells)].reset_index(drop=True)
     lin = px_um if px_um else 1.0
     size = pd.DataFrame(index=pd.Index(cells, name="Cell"))
-    size["Area (µm²)"] = pd.to_numeric(df["Area"], errors="coerce").values * lin ** 2
-    size["Equivalent diameter (µm)"] = 2 * np.sqrt(size["Area (µm²)"] / np.pi)
+    area_um2 = pd.to_numeric(df["Area"], errors="coerce").values * lin ** 2   # the file is in µm² (scale set in ImageJ)
+    size["Area (mm²)"] = area_um2 / 1e6
+    size["Equivalent diameter (µm)"] = 2 * np.sqrt(area_um2 / np.pi)
     for col, label in (("Feret", "Feret diameter max (µm)"), ("MinFeret", "Feret diameter min (µm)"),
                        ("Perim.", "Perimeter (µm)")):
         if col in df.columns:
@@ -171,6 +172,14 @@ def response_start(F, thr, added, n_frames=3):
     return start
 
 
+def _peak_frame(F, added):
+    """Frame of the highest ΔF of each cell after the drug was added (NaN if there are no frames after it)."""
+    after = F.loc[added + 1:]
+    if len(after) == 0:
+        return pd.Series(np.nan, index=F.columns)
+    return after.idxmax().astype(float)
+
+
 def analyse_recording(csv, name, baseline, peak, n_sd, n_bg, use, added=None, onset_frames=3):
     raw = read_imagej_csv(csv)
     X, bg = background_subtract(raw, n_bg, use)
@@ -187,6 +196,7 @@ def analyse_recording(csv, name, baseline, peak, n_sd, n_bg, use, added=None, on
     added = b1 if added is None else added    # frame at which the drug was added
     return dict(name=name, csv=Path(csv), raw=raw, bg=bg, X=X, Bavg=Bavg, F=F, dFF0=F / F0,
                 added=added, start=response_start(F, thr, added, onset_frames),
+                peak_frame=_peak_frame(F, added),
                 mean_base=mean_base, sd_base=sd_base, thr=thr, peak_F=peak_F, peak_dFF0=peak_F / F0,
                 max_F=F.loc[p0:p1].max(), resp=resp, baseline=baseline, peak=peak, n_sd=n_sd)
 
@@ -214,7 +224,7 @@ def safe_file(name):
 
 def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
         qc_index=None, size_csv=None, px_um=0,
-        added=None, late_s=0, min_qc_dff0=0, onset_frames=ONSET_FRAMES):
+        added=None, late_s=0, min_qc_dff0=0, onset_frames=ONSET_FRAMES, peak_late_s=0):
     """added = frame of drug addition per recording (None = end of its baseline);
     late_s > 0: remove cells whose response to a drug starts later than late_s seconds after the drug;
     min_qc_dff0 > 0: remove cells whose peak ΔF/F0 for the QC drug is below it."""
@@ -265,6 +275,7 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     # rule: late response = the response to a drug starts later than late_s seconds after the drug was added
     for d in recs:
         d["start_s"] = (d["start"] - d["added"]) * interval      # seconds after the drug, NaN = no response
+        d["peak_s"] = (d["peak_frame"] - d["added"]) * interval  # seconds after the drug to the highest point
     if late_s > 0:
         for d in drugs:
             late = kept & (d["start_s"] > late_s)
@@ -273,11 +284,17 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
             if late_s > (len(d["F"]) - d["added"]) * interval:
                 print(f"  note {d['name']}: the recording ends {(len(d['F']) - d['added']) * interval:g} s after the "
                       f"drug, so no response can start later than {late_s:g} s")
+    # rule: peak response = the highest point of the response comes later than peak_late_s after the drug
+    if peak_late_s > 0:
+        for d in recs:                                   # every recording, the QC drug (KCl) included
+            late = kept & (d["peak_s"] > peak_late_s)
+            status[late] = f"excluded (peak response to {d['name']} after {peak_late_s:g} s)"
+            kept &= ~late
     n_kept = int(kept.sum())
     if n_kept == 0:
         raise ValueError("no cell passed the quality control - check the peak window of the quality-control "
                          "drug and the quality-control rules")
-    any_rule = bool(qc) or late_s > 0 or bool(missing)
+    any_rule = bool(qc) or late_s > 0 or peak_late_s > 0 or bool(missing)
     cells_k = kept.index[kept]
 
     if qc:
@@ -318,10 +335,9 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
         for c in size.columns:
             per_cell[c] = size[c]
         med = size["Equivalent diameter (µm)"].median()
-        print(f"  cell size: median equivalent diameter {med:.1f} µm, median area {size['Area (µm²)'].median():.1f} µm²")
+        print(f"  cell size: median equivalent diameter {med:.1f} µm, median area {size['Area (mm²)'].median():.5f} mm²")
         if not px_um and med > 60:
-            print("  note: diameters look like PIXELS - give the pixel size in µm when asked, "
-                  "or set the scale in ImageJ (Analyze > Set Scale) before measuring")
+            print("  note: diameters look like PIXELS - set the scale in ImageJ (Analyze > Set Scale) and measure again")
     per_cell["Resting raw intensity, first recording (frames of its baseline)"] = \
         recs[0]["raw"][ref].loc[recs[0]["baseline"][0]:recs[0]["baseline"][1]].mean()
     for d in recs:
@@ -333,6 +349,7 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
         per_cell[f"{n} | max ΔF in peak window"] = d["max_F"]
         per_cell[f"{n} | mean peak ΔF/F0"] = d["peak_dFF0"]
         per_cell[f"{n} | response starts (s after drug; empty = never above threshold)"] = d["start_s"]
+        per_cell[f"{n} | peak at (s after drug)"] = d["peak_s"]
         if qc and d is not qc:
             per_cell[f"{n} | mean peak ΔF/ΔF({qn})"] = d["peak_norm"]
         per_cell[f"{n} | responder (1/0)"] = d["resp"].astype(int)
@@ -417,9 +434,11 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     set_rows += [("Late-response rule", f"cell removed if its response to a drug starts later than {late_s:g} s after "
                                         f"the drug was added (start = first of {onset_frames} frames in a row above "
                                         f"the threshold)" if late_s > 0 else "off"),
+                 ("Peak-time rule", f"cell removed if the highest point of its response to a drug (or the QC drug) comes later than "
+                                    f"{peak_late_s:g} s after the drug was added" if peak_late_s > 0 else "off"),
                  ("Cells kept / total", f"{n_kept} / {n_all}")]
     if size is not None:
-        set_rows += [("Size file", Path(size_csv).name), ("Pixel size (µm)", px_um or "file already in µm")]
+        set_rows += [("Size file", Path(size_csv).name), ("Area unit", "mm² (the file is in µm², scale set in ImageJ)")]
     settings = pd.DataFrame(set_rows, columns=["Setting", "Value"])
 
     # ---------------- write: Excel + CSV
@@ -678,6 +697,8 @@ def main():
         return v
     late_s = _ask("Remove cells whose response starts later than this many seconds after the drug (0 = off)",
                   float(LATE_RESPONSE_S), not_negative)
+    peak_late_s = _ask("Remove cells whose PEAK (highest point) comes later than this many seconds after the drug "
+                       "(0 = off)", float(PEAK_LATE_S), not_negative)
     min_dff0 = 0.0
     if qc_index is not None:
         min_dff0 = _ask(f"Remove cells whose peak ΔF/F0 for {names[qc_index]} is below (0 = off)",
@@ -685,21 +706,20 @@ def main():
 
     size_csv = _ask("Cell size file (ImageJ Measure of the ROIs), or 'none'",
                     SIZE_FILE if _exists(SIZE_FILE) else "none", _file_or_none)
-    px_um = 0.0
-    if size_csv:
-        px_um = _ask("Pixel size in µm if that file is in pixels (0 = already in µm)", float(PIXEL_SIZE_UM), float)
+    px_um = 0.0                                          # the scale is set in ImageJ, so the file is already in µm
 
     out = Path(csvs[0]).parent / OUTPUT_FOLDER
     print()
     run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
         qc_index=qc_index, size_csv=size_csv, px_um=px_um,
-        added=added, late_s=late_s, min_qc_dff0=min_dff0)
+        added=added, late_s=late_s, min_qc_dff0=min_dff0, peak_late_s=peak_late_s)
 
     settings = dict(csvs=[c.name for c in csvs], names=names, baselines=baselines, peaks=peaks,
                     n_sd=n_sds, n_bg=n_bg, bg_use=use, interval=interval, washes=washes,
                     qc=names[qc_index] if qc_index is not None else None,
-                    size_file=size_csv.name if size_csv else None, pixel_size_um=px_um,
-                    drug_added_at_frame=added, late_response_s=late_s, min_qc_dff0=min_dff0)
+                    size_file=size_csv.name if size_csv else None,
+                    drug_added_at_frame=added, late_response_s=late_s, min_qc_dff0=min_dff0,
+                    peak_late_s=peak_late_s)
     (out / "settings.json").write_text(json.dumps(settings, indent=2))
 
 

@@ -364,18 +364,15 @@ class Window(QtWidgets.QMainWindow):
         self.interval.setValue(1.0); self.interval.setSuffix(" s")
         self.size_file = W.QComboBox()
         self.size_file.addItem("none")
-        self.px_um = plain(W.QDoubleSpinBox()); self.px_um.setRange(0, 100); self.px_um.setDecimals(4)
-        self.px_um.setValue(0); self.px_um.setSuffix(" µm")
         self.n_bg.setToolTip("How many of the LAST ROIs are the empty background boxes.")
         self.bg_use.setToolTip("'all', or the numbers of the boxes to use if one of them is not empty, e.g. 98, 99.")
         self.size_file.setToolTip("Optional. ImageJ: ROI Manager → Measure, saved as cell_size.csv.\n"
                                   "Needed for the two cell-area graphs.")
-        self.px_um.setToolTip("Only if the cell size file is in pixels: the size of one pixel in µm.")
         self._fields(v, [("Background boxes (the last ROIs)", self.n_bg),
                          ("Background boxes to use", self.bg_use),
                          ("Time between two frames", self.interval),
                          ("Cell size file (optional)", self.size_file),
-                         ("Pixel size (0 = size file already in µm)", self.px_um)], columns=3)
+                         ], columns=3)
         self.n_bg.valueChanged.connect(self.changed)
         self.bg_use.editingFinished.connect(self.changed)
         self.interval.valueChanged.connect(self.changed)
@@ -384,6 +381,11 @@ class Window(QtWidgets.QMainWindow):
         box, v = self._card(4, "Quality control: two more rules")
         self.late_s = plain(W.QDoubleSpinBox()); self.late_s.setRange(0, 100000); self.late_s.setDecimals(1)
         self.late_s.setValue(cm.LATE_RESPONSE_S); self.late_s.setSuffix(" s after the drug")
+        self.peak_s = plain(W.QDoubleSpinBox()); self.peak_s.setRange(0, 100000); self.peak_s.setDecimals(1)
+        self.peak_s.setValue(cm.PEAK_LATE_S); self.peak_s.setSuffix(" s after the drug")
+        self.peak_s.setToolTip("A cell is removed if the highest point of its response to a drug comes later than "
+                               "this.\n0 = this rule is switched off.")
+        self.peak_s.valueChanged.connect(self.changed)
         self.min_dff0 = plain(W.QDoubleSpinBox()); self.min_dff0.setRange(0, 1000); self.min_dff0.setDecimals(5)
         self.min_dff0.setSingleStep(0.0001); self.min_dff0.setValue(cm.MIN_QC_DFF0)
         self.late_s.setToolTip("A cell is removed if, in a drug recording, its response starts later than this.\n"
@@ -391,6 +393,7 @@ class Window(QtWidgets.QMainWindow):
         self.min_dff0.setToolTip("A cell is removed if its peak ΔF/F0 for the quality-control drug is below this.\n"
                                  "0 = this rule is switched off.")
         self._fields(v, [("Remove cells that respond later than  (0 = off)", self.late_s),
+                         ("Remove cells whose PEAK comes later than  (0 = off)", self.peak_s),
                          ("Remove cells with a QC response (ΔF/F0) below  (0 = off)", self.min_dff0)])
         self.late_s.valueChanged.connect(self.changed)
         lay.addWidget(box)
@@ -782,7 +785,8 @@ class Window(QtWidgets.QMainWindow):
     def session(self):
         return dict(rows=self.rows(), n_bg=self.n_bg.value(), bg_use=self.bg_use.text(),
                     interval=self.interval.value(), size_file=self.size_file.currentText(),
-                    px_um=self.px_um.value(), late_s=self.late_s.value(), min_dff0=self.min_dff0.value(),
+                    late_s=self.late_s.value(), peak_s=self.peak_s.value(),
+                    min_dff0=self.min_dff0.value(),
                     unit=self.unit.currentIndex(), fmt=self.fmt.currentText())
 
     def apply_session(self, s):
@@ -799,8 +803,8 @@ class Window(QtWidgets.QMainWindow):
             self.size_file.addItem(size)
         if size in ["none"] + self.size_files:
             self.size_file.setCurrentText(size)
-        self.px_um.setValue(float(s.get("px_um", 0)))
         self.late_s.setValue(float(s.get("late_s", cm.LATE_RESPONSE_S)))
+        self.peak_s.setValue(float(s.get("peak_s", cm.PEAK_LATE_S)))
         self.min_dff0.setValue(float(s.get("min_dff0", cm.MIN_QC_DFF0)))
         self.unit.setCurrentIndex(int(s.get("unit", 0)))
         self.fmt.setCurrentText(s.get("fmt", "png"))
@@ -893,8 +897,8 @@ class Window(QtWidgets.QMainWindow):
         a["n_bg"], a["use"] = self.background(self.raw(rows[0]["file"]).columns)
         a["interval"] = self.interval.value()
         a["size_csv"] = None if self.size_file.currentText() == "none" else self.folder / self.size_file.currentText()
-        a["px_um"] = self.px_um.value()
         a["late_s"] = self.late_s.value()
+        a["peak_s"] = self.peak_s.value()
         a["min_dff0"] = self.min_dff0.value() if a["qc_index"] is not None else 0.0
         return a
 
@@ -1005,15 +1009,15 @@ class Window(QtWidgets.QMainWindow):
             with contextlib.redirect_stdout(buf):
                 cm.run(a["csvs"], a["names"], a["baselines"], a["peaks"], a["n_sds"], a["n_bg"], a["use"],
                        a["interval"], a["washes"], out, qc_index=a["qc_index"], size_csv=a["size_csv"],
-                       px_um=a["px_um"], added=a["added"], late_s=a["late_s"],
-                       min_qc_dff0=a["min_dff0"])
+                       added=a["added"], late_s=a["late_s"],
+                       min_qc_dff0=a["min_dff0"], peak_late_s=a["peak_s"])
             settings = dict(csvs=[c.name for c in a["csvs"]], names=a["names"], baselines=a["baselines"],
                             peaks=a["peaks"], n_sd=a["n_sds"], n_bg=a["n_bg"], bg_use=a["use"],
                             interval=a["interval"], washes=a["washes"],
                             qc=a["names"][a["qc_index"]] if a["qc_index"] is not None else None,
                             size_file=a["size_csv"].name if a["size_csv"] else None,
-                            pixel_size_um=a["px_um"], drug_added_at_frame=a["added"],
-                            late_response_s=a["late_s"], min_qc_dff0=a["min_dff0"])
+                            drug_added_at_frame=a["added"],
+                            late_response_s=a["late_s"], min_qc_dff0=a["min_dff0"], peak_late_s=a["peak_s"])
             (out / "settings.json").write_text(json.dumps(settings, indent=2))
         except ValueError as e:
             error = str(e)
@@ -1104,8 +1108,7 @@ class Window(QtWidgets.QMainWindow):
                             f"<td>{r['% of analysed cells']:.1f}</td></tr>")
             html.append("</table>")
         if D["area"] is not None:
-            html.append(f"<h3>Cell size (analysed cells)</h3><p>Median area {D['area'].median():.1f} µm², median "
-                        f"equivalent diameter {2 * np.sqrt(D['area'].median() / np.pi):.1f} µm.</p>")
+            html.append(f"<h3>Cell size (analysed cells)</h3><p>Median area {D['area'].median():.5f} mm²</p>")
         html.append(f"<p class='dim'>All tables: {D['xlsx']}</p>")
         return "".join(html)
 

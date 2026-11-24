@@ -50,7 +50,10 @@ UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
 UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
 TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
 UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
-UNIT_LABEL = # Graph 2, y axis (the height of the traces):
+TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
+UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
+UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
+# Graph 2, y axis (the height of the traces):
 #   "panel" = every panel has its own range (default: small responses are visible)
 #   "row"   = the drug and the KCl panel of one row share a range (they can be compared)
 #   "all"   = one fixed range for every panel
@@ -469,7 +472,7 @@ def save_all(D, out, fmt="png", unit="dF"):
         path = out / f"{name}.{fmt}"
         fig.savefig(path, dpi=300 if fmt == "png" else None, bbox_inches="tight", facecolor="white")
         saved.append(path)
-    save_responder_csv(D, out, unit)
+#save_responder_csv(D, out, unit)
     return saved
 
 # ------------------------------------------------------------------ command line
