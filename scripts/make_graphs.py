@@ -48,18 +48,12 @@ VENN_LINES = ["-", "--", ":", "-.", (0, (7, 1.5, 1, 1.5, 1, 1.5))]   # graph 3: 
 TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
 UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
 UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
-TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
-UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
-TRACE_COLS = ("Frame", "Recording", "Time in recording (s)", "Experiment time (s)")
-UNIT_SHEET = {"dF": "Cell_traces_dF", "dF_F0": "Cell_traces_dF_F0"}
-UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
 # Graph 2, y axis (the height of the traces):
 #   "panel" = every panel has its own range (default: small responses are visible)
 #   "row"   = the drug and the KCl panel of one row share a range (they can be compared)
 #   "all"   = one fixed range for every panel
 GRAPH2_Y = "panel"
-RESPONDER_CSV_DIR = "responders"     # folder for the CSV files of the responders
-
+RESPONDER_CSV_DIR = "responders"     # folder for the CSV files of the responders (written with the graphs)
 
 
 def clean(ax):
@@ -85,13 +79,13 @@ def load(xlsx):
     kept = resp.index[resp[drugs[0]].astype(str).isin(["yes", "no"])]
     status_col = qc_col or ("Cell status" if "Cell status" in resp.columns else None)
     excluded = resp.loc[~resp.index.isin(kept), status_col].astype(str).value_counts() if status_col else pd.Series(dtype=int)
-    acol = next((c for c in per_cell.columns if str(c).startswith("Area")), None)
+    acol = next((c for c in per_cell.columns if str(c).startswith("Equivalent diameter")), None)
     area = pd.to_numeric(per_cell.loc[kept, acol], errors="coerce") if acol else None
     if area is not None and area.isna().all():
         area = None
     return dict(xlsx=Path(xlsx), summary=summary, combos=combos, resp_all=resp, resp=resp.loc[kept],
                 per_cell=per_cell, traces=traces, drugs=drugs, qc=qc, n_all=len(resp), excluded=excluded,
-                area=area, area_label=("Cell a" + acol[1:]) if acol else "Cell area")
+                area=area, area_label="Cell diameter (µm)")
 
 
 def _cells(tr):
@@ -167,6 +161,7 @@ def fig_drug_qc(D, unit="dF"):
                         fontsize=9, color=INK)
             ax.axhline(0, color=RULE, lw=0.8, zorder=0)
             ax.set_xlim(t[0], t[-1])
+            same = "" if len(cells) == 1 else f""
             title = f"{drug}  ({len(cells)} of {len(D['resp'])} cells responded)" if j == 0 else f"{qc}"
             ax.set_title(title, fontsize=10.5, color="#0b0b0b", loc="left")
             clean(ax)
@@ -429,7 +424,7 @@ def fig_area_box(D):
     ax.set_xticks([j * STEP for j in range(len(drugs))], labels)
     ax.set_xlim(-0.35, (len(drugs) - 1) * STEP + 0.35)
     unit = D["area_label"][D["area_label"].find("("):] if "(" in D["area_label"] else ""
-    ax.set_ylabel(f"Cell area of responders {unit}".strip(), color=INK)
+    ax.set_ylabel(f"Cell diameter of responders {unit}".strip(), color=INK)
     clean(ax)
     return fig
 
@@ -439,8 +434,8 @@ GRAPHS = [  # (file name, tab title, needs cell size)
     ("1_traces_cells", "1 · Cells", False),
     ("2_drug_and_QC", "2 · Drug and QC", False),
     ("3_pies_and_venn", "3 · Responders", False),
-    ("4_area_scatter", "4 · Area", True),
-    ("5_area_responders_box", "5 · Area of responders", True),
+    ("4_area_scatter", "4 · Cell size", True),
+    ("5_area_responders_box", "5 · Cell size of responders", True),
 ]
 
 
@@ -500,6 +495,7 @@ def save_all(D, out, fmt="png", unit="dF"):
     save_responder_csv(D, out, unit)
     return saved
 
+
 # ------------------------------------------------------------------ command line
 def _ask(prompt, default, check=None):
     while True:
@@ -548,6 +544,7 @@ def main():
     if D["area"] is None:
         print("  (no cell size in the results - graphs 4 and 5 skipped; run the analysis with cell_size.csv)")
     print(f"\nGraphs in: {out}")
+    print(f"CSV files of the responders in: {out / RESPONDER_CSV_DIR}")
 
 
 if __name__ == "__main__":

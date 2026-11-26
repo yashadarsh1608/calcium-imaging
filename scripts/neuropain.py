@@ -367,7 +367,7 @@ class Window(QtWidgets.QMainWindow):
         self.n_bg.setToolTip("How many of the LAST ROIs are the empty background boxes.")
         self.bg_use.setToolTip("'all', or the numbers of the boxes to use if one of them is not empty, e.g. 98, 99.")
         self.size_file.setToolTip("Optional. ImageJ: ROI Manager → Measure, saved as cell_size.csv.\n"
-                                  "Needed for the two cell-area graphs.")
+                                  "Needed for the two cell-size graphs.")
         self._fields(v, [("Background boxes (the last ROIs)", self.n_bg),
                          ("Background boxes to use", self.bg_use),
                          ("Time between two frames", self.interval),
@@ -980,7 +980,7 @@ class Window(QtWidgets.QMainWindow):
         self.overview.set_pixmap(figure_pixmap(fig, dpi=160))
         text = checks.getvalue().strip()
         if text != self.last_checks:
-            self.last_checks = text
+            self.last_checks = text 
             self.log("Checks of the recordings:\n" + text if text else "Checks of the recordings: background boxes "
                      "and baselines look fine.")
 
@@ -1108,7 +1108,7 @@ class Window(QtWidgets.QMainWindow):
                             f"<td>{r['% of analysed cells']:.1f}</td></tr>")
             html.append("</table>")
         if D["area"] is not None:
-            html.append(f"<h3>Cell size (analysed cells)</h3><p>Median area {D['area'].median():.5f} mm²</p>")
+            html.append(f"<h3>Cell size (analysed cells)</h3><p>Median size of the cell {D['area'].median():.1f} µm</p>")
         html.append(f"<p class='dim'>All tables: {D['xlsx']}</p>")
         return "".join(html)
 
