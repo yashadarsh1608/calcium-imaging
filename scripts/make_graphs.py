@@ -4,8 +4,9 @@ make_graphs.py - graphs from the result tables of calcium_multidrug.py (multidru
 HOW TO USE (in the experiment folder, after the analysis has run):
     python make_graphs.py
 It asks a few questions ([brackets] = suggestion, ENTER accepts) and saves the graphs in
-multidrug_results/graphs/. The analysis is NOT repeated: everything comes from the Excel file.
-The same graphs are shown in the window of calcium_gui.py.
+multidrug_results/graphs/, each with a CSV of the numbers it shows (same name, .csv).
+The analysis is NOT repeated: everything comes from the Excel file.
+The same graphs are shown in the window of neuropain.py.
 
 Every graph uses only the cells kept after the quality-control drug (e.g. KCl):
   1_traces_cells            F - F0 over time of every recording incl. the QC drug, every cell
@@ -16,9 +17,9 @@ Every graph uses only the cells kept after the quality-control drug (e.g. KCl):
   3_pies_and_venn           black and grey: one pie per drug (responders vs non-responders) +
                             2-3 drugs: Venn diagram with circle sizes proportional to the number
                             of responders. 4 or more drugs: bar chart of every combination
-  4_area_scatter            cell area per drug, every cell one dot (black = responder,
+  4_area_scatter            cell diameter (µm) per drug, every cell one dot (black = responder,
                             grey = non-responder), inside a bar outline
-  5_area_responders_box     box-and-whisker of the cell area of the responders only
+  5_area_responders_box     box-and-whisker of the cell diameter (µm) of the responders only
 Graphs 4 and 5 need the cell size (cell_size.csv in the analysis).
 """
 
@@ -53,7 +54,6 @@ UNIT_LABEL = {"dF": "F − F0  (ΔF, gray value)", "dF_F0": "ΔF/F0"}
 #   "row"   = the drug and the KCl panel of one row share a range (they can be compared)
 #   "all"   = one fixed range for every panel
 GRAPH2_Y = "panel"
-RESPONDER_CSV_DIR = "responders"     # folder for the CSV files of the responders (written with the graphs)
 
 
 def clean(ax):
@@ -452,38 +452,75 @@ def make_figure(D, name, unit="dF"):
     return fig_area_scatter(D) if name == "4_area_scatter" else fig_area_box(D)
 
 
-def save_responder_csv(D, out, unit="dF"):
-    """One CSV per drug with the cells that responded to it. Rows = frames of the drug recording.
-    Columns: the time, then every responder's trace in the drug recording ("<cell> <drug>"),
-    then the same cells in the quality-control recording ("<cell> <QC>"). Returns the paths."""
-    tr = D["traces"][unit]
-    folder = Path(out) / RESPONDER_CSV_DIR
-    folder.mkdir(parents=True, exist_ok=True)
-    for old in folder.glob("*.csv"):
-        old.unlink()
-    written = []
-    for drug in D["drugs"]:
-        cells = [c for c in _responders(D, drug) if c in _cells(tr)]
-        if not cells:
-            continue
-        recs = [drug] + ([D["qc"]] if D["qc"] else [])
-        time = tr.loc[tr.Recording == drug, "Time in recording (s)"].reset_index(drop=True).rename("Time (s)")
-        blocks = [tr.loc[tr.Recording == rec, cells].reset_index(drop=True).add_suffix(f" {rec}") for rec in recs]
-        table = pd.concat([time] + blocks, axis=1)
-        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in drug)
-        path = folder / f"responders_{safe}_{unit}.csv"
-        table.to_csv(path, index=False, encoding="utf-8-sig", float_format="%.4f")
-        written.append(path)
-    return written
+def _side_by_side(blocks):
+    """Columns of different length next to each other (shorter ones end with empty cells)."""
+    return pd.concat([b.reset_index(drop=True) for b in blocks], axis=1)
+
+
+def graph_data(D, name, unit="dF"):
+    """The numbers that one graph shows, as a table (None if the graph cannot be made)."""
+    tr, lab = D["traces"][unit], UNIT_LABEL[unit]
+    cells = _cells(tr)
+    if name == "1_traces_cells":                         # every analysed cell, every recording
+        t = tr[["Recording", "Time in recording (s)", "Experiment time (s)"] + cells].copy()
+        t.insert(1, "Values", [lab] + [""] * (len(t) - 1))
+        return t
+    if name == "2_drug_and_QC":                          # responders of each drug: drug, then the QC drug
+        blocks = []
+        for drug in D["drugs"]:
+            resp = [c for c in _responders(D, drug) if c in cells]
+            for rec in [drug] + ([D["qc"]] if D["qc"] else []):
+                d = tr[tr.Recording == rec]
+                head = drug if rec == drug else f"{drug} responders in {rec}"
+                b = d[["Time in recording (s)"] + resp].copy()
+                b["Average of the responders"] = d[resp].mean(axis=1) if resp else np.nan
+                b.columns = [f"{head} | {c}" for c in b.columns]
+                blocks.append(b)
+        t = _side_by_side(blocks)
+        t.insert(0, "Values", [lab] + [""] * (len(t) - 1))
+        return t
+    if name == "3_pies_and_venn":                        # pies, then the overlap of the drugs
+        r, n = D["resp"], len(D["resp"])
+        rows = []
+        for drug in D["drugs"]:
+            k = int((r[drug].astype(str) == "yes").sum())
+            rows += [(drug, "responders", k), (drug, "non-responders", n - k)]
+        combo = r["Responds to"].astype(str).value_counts()
+        order = sorted(combo.index, key=lambda x: (x == "none", -x.count("+"), -combo[x]))
+        rows += [("Overlap", o, int(combo[o])) for o in order]
+        t = pd.DataFrame(rows, columns=["Graph part", "Group", "Cells"])
+        t["% of analysed cells"] = (100 * t["Cells"] / n).round(1)
+        return t
+    if D["area"] is None:
+        return None
+    if name == "4_area_scatter":                         # every cell: diameter and responder or not
+        t = pd.DataFrame({"Cell": D["area"].index, "Cell diameter (µm)": D["area"].values})
+        for drug in D["drugs"]:
+            t[f"{drug} responder"] = D["resp"][drug].astype(str).values
+        return t
+    if name == "5_area_responders_box":                  # the diameters of the responders of each drug
+        blocks = []
+        for drug in D["drugs"]:
+            yes = (D["resp"][drug].astype(str) == "yes").values
+            v = D["area"][yes].dropna()
+            blocks.append(pd.DataFrame({f"{drug} | Cell": v.index, f"{drug} | Cell diameter (µm)": v.values}))
+        return _side_by_side(blocks)
+    return None
 
 
 def save_all(D, out, fmt="png", unit="dF"):
-    """Save every graph into the folder `out`; returns the saved paths."""
+    """Save every graph and, next to it, a CSV with the numbers it shows; returns the saved paths."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("[1-6]_*.*"):                   # graphs of an earlier run would be out of date
-        if old.suffix.lower() in (".png", ".pdf", ".svg"):
+        if old.suffix.lower() in (".png", ".pdf", ".svg", ".csv"):
             old.unlink()
+    old_dir = out / "responders"                         # written by an earlier version, no longer made
+    if old_dir.is_dir():
+        for f in old_dir.glob("responders_*.csv"):
+            f.unlink()
+        if not any(old_dir.iterdir()):
+            old_dir.rmdir()
     saved = []
     for name, _, _ in GRAPHS:
         fig = make_figure(D, name, unit)
@@ -492,7 +529,9 @@ def save_all(D, out, fmt="png", unit="dF"):
         path = out / f"{name}.{fmt}"
         fig.savefig(path, dpi=300 if fmt == "png" else None, bbox_inches="tight", facecolor="white")
         saved.append(path)
-    save_responder_csv(D, out, unit)
+        data = graph_data(D, name, unit)
+        if data is not None:
+            data.to_csv(out / f"{name}.csv", index=False, encoding="utf-8-sig", float_format="%.4f")
     return saved
 
 
@@ -543,8 +582,7 @@ def main():
         print(f"  saved {p.name}")
     if D["area"] is None:
         print("  (no cell size in the results - graphs 4 and 5 skipped; run the analysis with cell_size.csv)")
-    print(f"\nGraphs in: {out}")
-    print(f"CSV files of the responders in: {out / RESPONDER_CSV_DIR}")
+    print(f"\nGraphs and their data (one CSV per graph) in: {out}")
 
 
 if __name__ == "__main__":

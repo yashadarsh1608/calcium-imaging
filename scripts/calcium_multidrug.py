@@ -22,7 +22,8 @@ Two more quality-control rules (each can be switched off with 0):
     40 s after the drug was added (start = first of 3 frames in a row above the cell's threshold).
 Optional cell size: ImageJ ROI Manager -> Measure (Area, Feret, ...) -> area and diameter per cell.
 
-Output: one Excel file + the same tables as CSV files, ready for making any graph later.
+Output: one Excel file with every table, and per recording one CSV with its responders (raw ImageJ values +
+the numbers of every cell); for a drug only the responders that passed the quality control.
 Input: ImageJ Multi Measure CSV per recording (Mean gray value, one row per frame),
        background boxes = the LAST columns, same ROI set in every recording.
 """
@@ -50,7 +51,6 @@ OUTPUT_FOLDER = "multidrug_results"
 # ====================================================================================================================
 
 import re
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -220,6 +220,52 @@ def safe_sheet(name, used):
 
 def safe_file(name):
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "table"
+
+
+def _remove_old_outputs(out):
+    """Files that earlier versions wrote and that are no longer made: the csv/ folder and the zip."""
+    old_dir = out / "csv"
+    if old_dir.is_dir():
+        for f in old_dir.glob("*.csv"):
+            f.unlink()
+        if not any(old_dir.iterdir()):
+            old_dir.rmdir()
+    old_zip = out.parent / f"{out.name}.zip"
+    if old_zip.is_file():
+        old_zip.unlink()
+
+
+def save_responders(d, cells, status, size, interval, out, qc=None):
+    """One CSV for one recording with the cells given (its responders): the raw ImageJ values of
+    that recording (only these cells, plus the background boxes), and on top of every column the
+    numbers of that cell. qc = the quality-control recording (for the normalised peak). Returns the path."""
+    n = d["name"]
+    bg_cols = [c for c in d["raw"].columns if c not in d["F"].columns]
+    info = [("Status", status),
+            ("Responded to " + n, pd.Series("yes", index=cells)),
+            ("Bavg (resting X)", d["Bavg"]),
+            ("SD baseline", d["sd_base"]),
+            (f"Threshold ΔF (mean + {d['n_sd']:g} SD)", d["thr"]),
+            ("Mean peak ΔF", d["peak_F"]),
+            ("Max ΔF in peak window", d["max_F"]),
+            ("Mean peak ΔF/F0", d["peak_dFF0"])]
+    if qc is not None and d is not qc and "peak_norm" in d:
+        info.append((f"Mean peak ΔF/ΔF({qc['name']})", d["peak_norm"]))
+    info += [(f"Response starts (s after {n})", d["start_s"]),
+             (f"Peak at (s after {n})", d["peak_s"])]
+    if size is not None:
+        info += [(c, size[c]) for c in size.columns]
+    fmt = lambda x: float(f"{x:.6g}") if isinstance(x, (float, np.floating)) else x   # 6 significant digits
+    head = pd.DataFrame([[lab, ""] + [fmt(v.get(c, "")) for c in cells] + ["background"] * len(bg_cols)
+                         for lab, v in info],
+                        columns=["Frame", "Time (s)"] + cells + bg_cols)
+    raw = d["raw"][cells + bg_cols].copy()
+    raw.insert(0, "Time (s)", (raw.index.values - 1) * interval)
+    raw = raw.reset_index()
+    table = pd.concat([head, raw], ignore_index=True)
+    path = Path(out) / f"{safe_file(n)}_responders.csv"
+    table.to_csv(path, index=False, encoding="utf-8-sig")
+    return path
 
 
 def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
@@ -475,18 +521,13 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     with pd.ExcelWriter(xlsx) as w:
         for name, df, idx in tables:
             df.to_excel(w, sheet_name=safe_sheet(name, used), index=idx)
-    csv_dir = out / "csv"
-    csv_dir.mkdir(exist_ok=True)
-    for old in csv_dir.glob("*.csv"):
-        old.unlink()
-    for k, (name, df, idx) in enumerate(tables, 1):
-        df.to_csv(csv_dir / f"{k:02d}_{safe_file(name)}.csv", index=idx, encoding="utf-8-sig")
-
-    zpath = out.parent / f"{out.name}.zip"
-    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
-        for f in sorted(out.rglob("*")):
-            if f.is_file():
-                z.write(f, arcname=f"{out.name}/{f.relative_to(out)}")
+    _remove_old_outputs(out)
+    resp_csvs = []
+    if qc:                                       # every cell that responded to the QC drug
+        resp_csvs.append(save_responders(qc, list(qc["resp"].index[qc["resp"]]), status, size, interval, out, qc))
+    for d in drugs:                              # responded to the drug AND passed the quality control
+        r = d["resp"] & kept
+        resp_csvs.append(save_responders(d, list(r.index[r]), status, size, interval, out, qc))
 
     print(f"\n{n_all} cells (same ROIs in all recordings)")
     if any_rule:
@@ -500,7 +541,9 @@ def run(csvs, names, baselines, peaks, n_sds, n_bg, use, interval, washes, out,
     print("  responded to:")
     for _, r in combos.iterrows():
         print(f"    {r['Responds to']:<35s} {r['Cells']:4d} ({r['% of analysed cells']:5.1f}%)")
-    print(f"  results: {xlsx}\n           {csv_dir}/ ({len(tables)} CSV files)  (zip: {zpath.name})")
+    print(f"  results: {xlsx}")
+    for f in resp_csvs:
+        print(f"           {f.name}")
     return dict(per_cell=per_cell, responders=resp_tab, summary=summary, mean_traces=mean_traces)
 
 
